@@ -35,6 +35,9 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+See [WORKFLOW.md](WORKFLOW.md) for the full git / development workflow —
+branching, commits, syncing, undoing changes, and the pre-push checklist.
+
 ## Data
 
 - **Synthetic Generator** — builds labelled cohorts with noisy text variants and injected duplicates.
