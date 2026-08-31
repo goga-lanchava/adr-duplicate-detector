@@ -28,6 +28,10 @@ docker build -t adr-dedup .
 docker run -p 8501:8501 adr-dedup
 ```
 
+**New here?** [WORKFLOW.md](WORKFLOW.md) is a step-by-step walkthrough of using the
+app — loading data, choosing a scoring mode, setting the threshold, reviewing
+clusters, and exporting results.
+
 ## Development
 
 ```bash
@@ -35,8 +39,6 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-See [WORKFLOW.md](WORKFLOW.md) for the full git / development workflow —
-branching, commits, syncing, undoing changes, and the pre-push checklist.
 
 ## Data
 
