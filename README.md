@@ -48,10 +48,11 @@ they are, and then similar reports are grouped:
 |---|---|
 | **Normalization** | Clean up the text: brand names → generic (`Lipitor` → `atorvastatin`), strip doses/salts, map colloquial symptoms to standard terms, fix typos. |
 | **Blocking** | Avoid comparing every report to every other one. Only pairs that share, say, a drug *and* a reaction *and* a rough time window are considered. |
-| **Features** | For each candidate pair, measure 6 similarities: age, sex, seriousness, report date, drug overlap, reaction overlap. |
-| **Linkage model** | Turn those 6 numbers into one match probability. *Auto* mode learns the field weights from the data (Fellegi–Sunter EM); *Manual* mode lets you set them with sliders. |
-| **Vetoes** | Hard rules that override the score: no shared drug, no shared reaction, incompatible age/sex, or fewer than two agreeing signals → **not** a duplicate. |
-| **Clustering** | Build groups from the high-scoring pairs, with a safeguard so one weak link can't chain hundreds of unrelated reports together. |
+| **Features** | For each candidate pair, measure 6 similarities: age, sex, seriousness, report date, drug overlap, reaction overlap. Overlap is rarity-weighted: sharing an unusual drug counts for much more than sharing one half the reports mention. A field that is blank on either report counts as "unknown", not as a mismatch. |
+| **Linkage model** | Turn those 6 numbers into one match score. *Auto* mode learns how much each field matters from the data (Fellegi–Sunter EM) and outputs a probability; *Manual* mode lets you set the weights with sliders. |
+| **Vetoes** | Hard rules that override the score: no shared drug, no shared reaction, recorded ages more than 5 years apart, different recorded sex, or fewer than two agreeing signals → **not** a duplicate. |
+| **Ambiguity pruning** | A report keeps only its two strongest matches. If it resembles dozens of others equally (many patients on the same common drug with the same common reaction), those can't all be duplicates and the data can't say which are — so they are not merged, and the report is flagged. |
+| **Clustering** | Build groups from the surviving pairs, with a safeguard so one weak link can't chain unrelated reports together. |
 | **Review UI** | You inspect each group, untick the reports you consider redundant, and export. |
 
 Nothing is deleted automatically — the tool only proposes groupings.
@@ -69,14 +70,34 @@ Nothing is deleted automatically — the tool only proposes groupings.
   openFDA API, ready to upload.
 - `fetch_real_faers_data.py` — script to pull a fresh sample yourself.
 
+## Accuracy
+
+`python benchmark.py` scores the pipeline (pairwise precision / recall / F1) on two
+kinds of data:
+
+| Scenario | Auto mode F1 | Manual mode F1 |
+|---|---|---|
+| Synthetic cohorts (300 – 2,000 base cases) | 0.87 – 0.98 | 0.97 – 0.98 |
+| Real FAERS sample with injected duplicates | 0.70 – 0.72 | 0.69 – 0.73 |
+
+The second scenario is the more honest one: it keeps the real data's heavily skewed
+drug and reaction frequencies and adds known duplicates (perturbed copies) to score
+against. Its precision is a lower bound, because genuine duplicates already present
+in the FAERS sample are counted as errors.
+
 ## Limitations
 
-- The ~0.95 F1 on synthetic data looks great partly because that data is generated
-  from the same assumptions the model uses. Real reports are harder.
-- With only these six fields, some cases are genuinely undecidable — e.g. several
+- Synthetic scores flatter the model: that data is generated from the same
+  assumptions the model uses. Judge it by the real-data scenario.
+- With only six fields, some cases are genuinely undecidable — e.g. several
   55-year-old women all reporting the same drug and reaction in the same week.
-  The tool clusters them and flags it; the human review step is where the call
-  gets made.
+  The tool declines to merge such look-alike crowds rather than guess, which costs
+  some recall; affected reports are flagged in the review screen.
+- Auto mode needs data to learn from. Below 30 candidate pairs it falls back to
+  conventional prior weights, and on very dense inputs it becomes conservative
+  (higher precision, lower recall).
+- The symptom dictionary is deliberately coarse (e.g. "vomiting" and "nausea" map
+  to one term) to help matching; it is not a MedDRA coding tool.
 - If the input is too dense, the blocking stage caps itself and the app shows a
   warning that recall is unreliable for that run.
 
@@ -84,5 +105,6 @@ Nothing is deleted automatically — the tool only proposes groupings.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q
+pytest -q             # unit tests, accuracy floors, and a headless run of the app
+python benchmark.py   # accuracy table shown above
 ```

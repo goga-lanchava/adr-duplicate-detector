@@ -103,6 +103,54 @@ def cluster_candidate_pairs_sparse(
     return cluster_labels
 
 
+def prune_ambiguous_matches(
+    n_reports: int,
+    candidate_pairs: List[Tuple[int, int]],
+    match_probs: np.ndarray,
+    tiebreak: np.ndarray,
+    threshold: float,
+    max_matches_per_report: int = 2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Keep a match only if it is among the strongest few for BOTH of its reports.
+
+    A report has at most a handful of true duplicates. When it scores above the
+    threshold against dozens of others (many patients on the same common drug
+    reporting the same common reaction in the same month), those matches cannot
+    all be real, and the data offers no way to tell which - if any - are. Each
+    report therefore keeps only its ``max_matches_per_report`` best matches,
+    ranked by probability and then by ``tiebreak`` (a finer-grained similarity),
+    and an edge survives only when both endpoints keep it.
+
+    Returns ``(pruned_probs, n_pruned_per_report)``. Pruned edges have their
+    probability set to 0; the second array counts, per report, how many
+    above-threshold matches were discarded as ambiguous.
+    """
+    probs = np.asarray(match_probs, dtype=np.float64).copy()
+    pruned_per_report = np.zeros(n_reports, dtype=np.int64)
+    strong = np.flatnonzero(probs >= threshold)
+    if strong.size == 0 or max_matches_per_report <= 0:
+        return probs, pruned_per_report
+
+    # Strongest edges first; ties resolved by the finer similarity score.
+    order = strong[np.lexsort((-np.asarray(tiebreak)[strong], -probs[strong]))]
+
+    rank: Dict[int, Dict[int, int]] = defaultdict(dict)
+    for row in order:
+        i, j = candidate_pairs[row]
+        rank[i][row] = len(rank[i])
+        rank[j][row] = len(rank[j])
+
+    for row in order:
+        i, j = candidate_pairs[row]
+        if rank[i][row] >= max_matches_per_report or rank[j][row] >= max_matches_per_report:
+            probs[row] = 0.0
+            pruned_per_report[i] += 1
+            pruned_per_report[j] += 1
+
+    return probs, pruned_per_report
+
+
 def _n_pairs(counts: np.ndarray) -> float:
     """Number of unordered within-group pairs, summed over groups: Sum C(n, 2)."""
     c = np.asarray(counts, dtype=np.float64)

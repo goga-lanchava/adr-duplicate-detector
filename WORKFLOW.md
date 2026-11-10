@@ -80,11 +80,18 @@ Start with **Auto-ML**.
 
 ## 4. Set the cut-off — Sidebar step 3 ("Linkage Threshold")
 
-One slider, 0.50–0.95 (default **0.70**). Pairs scoring at or above this are
-treated as the same case.
+One slider. Pairs scoring at or above it are treated as the same case. The
+default depends on the mode, because the two modes score on different scales:
 
-- **Raise it** (e.g. 0.85) → fewer, higher-confidence merges (more precision).
-- **Lower it** (e.g. 0.60) → more aggressive merging (more recall).
+- **Auto-ML: 0.50** — the score is a probability, so 0.50 means "more likely a
+  duplicate than not".
+- **Manual: 0.70** — the score is a weighted similarity average, where chance
+  look-alikes often reach 0.5–0.6.
+
+Then adjust to taste:
+
+- **Raise it** → fewer, higher-confidence merges (more precision).
+- **Lower it** → more aggressive merging (more recall).
 
 You can re-run with different values freely.
 
@@ -115,8 +122,8 @@ Click **🚀 Run Entity Resolution**. After a moment the main panel fills in.
   (common on very small or very uniform inputs).
 
 **📊 Pipeline Diagnostics** (expander) — candidate-pair count, how many pairs were
-vetoed for incompatible age/sex, EM iteration count, and the learned per-field
-weights table (Auto mode).
+vetoed for incompatible age/sex, how many matches were pruned as ambiguous, EM
+iteration count, and the learned per-field weights table (Auto mode).
 
 **🔗 Scored Linked Pairs** (expander) — every scored pair above the audit
 threshold with its individual feature similarities. This is the "why did these
@@ -132,6 +139,10 @@ two match" view.
   age, sex, seriousness, day, drugs, and events laid out for comparison.
 - Each record has a **Keep Record** checkbox, ticked by default. **Untick** the
   ones you judge to be redundant duplicates.
+
+A ⚠️ note under a record means it also resembled several *other* reports too
+closely to tell apart, and only its strongest matches were kept — give those
+clusters a closer look.
 
 Work through the clusters that matter to you. Your decisions are remembered as
 you switch between clusters.
@@ -160,6 +171,7 @@ rely on the side-by-side review and the Scored Linked Pairs view.
 
 - With only these six fields, genuinely ambiguous cases exist — e.g. several
   same-age, same-sex reports of the same drug and reaction filed the same week.
-  The tool surfaces them as a cluster; the review step is where you make the call.
+  The tool does not merge such look-alike crowds; it keeps each report's best
+  one or two matches and flags the report so you can make the call.
 - Nothing is deleted automatically. The tool only ever *proposes*; the exported
   de-duplicated file reflects your checkboxes.

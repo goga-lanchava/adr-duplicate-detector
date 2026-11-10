@@ -71,7 +71,7 @@ class TextNormalizer:
         "skin rash": "rash",
         "hives": "rash",
         "urticaria": "rash",
-        "eruption": "rash",
+        "skin eruption": "rash",
         "itching": "pruritus",
         "itchy skin": "pruritus",
         "itchiness": "pruritus",
@@ -102,19 +102,39 @@ class TextNormalizer:
 
     CANONICAL_DRUGS = sorted(list(set(BRAND_TO_GENERIC.values())))
     CANONICAL_EVENTS = sorted(list(set(EVENT_SYNONYMS.values())))
+    _EVENT_PHRASE_PATTERNS = [
+        (re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)"), canonical)
+        for phrase, canonical in EVENT_SYNONYMS.items()
+    ]
 
-    # Regex for stripping dosage strengths, units, salts, hydrates, dosage forms,
-    # and administration routes -- all of which are noise for ingredient matching.
-    _DOSAGE_SALT_REGEX = re.compile(
-        r"\b(\d+(\.\d+)?\s*(mg|mcg|ug|g|ml)|hcl|hydrochloride|dihydrochloride|calcium|potassium|sodium|"
-        r"besylate|mesylate|fumarate|maleate|succinate|tartrate|acetate|sulfate|phosphate|"
-        r"trihydrate|dihydrate|monohydrate|hemihydrate|anhydrous|micronized|"
-        r"tablets|tablet|tabs|tab|capsules|capsule|caps|cap|patch|xr|er|sr|dr|cr|ir|otc|"
-        r"oral|iv|im|sc|subcutaneous|sublingual|topical|transdermal|inhalation|inhaled|"
-        r"nasal|intranasal|intravenous|intramuscular|rectal|ophthalmic|otic|"
-        r"gel|cream|ointment|lotion|solution|soln|suspension|susp|syrup|elixir|"
-        r"injection|inj|spray|drops)\b",
-        re.IGNORECASE,
+    # Dose strengths ("20 mg", "0.5ml") and bare numeric codes ("/00697202/").
+    _DOSE_REGEX = re.compile(
+        r"\b\d+(\.\d+)?\s*(mg|mcg|ug|g|ml|iu|units?)?\b", re.IGNORECASE
+    )
+
+    # Dosage forms, release modifiers, routes and hydrate forms: noise for
+    # ingredient matching wherever they appear in a drug name.
+    _FORM_WORDS = frozenset(
+        "tablets tablet tabs tab capsules capsule caps cap patch xr er sr dr cr ir otc "
+        "oral iv im sc subcutaneous sublingual topical transdermal inhalation inhaled "
+        "nasal intranasal intravenous intramuscular rectal ophthalmic otic "
+        "gel cream ointment lotion solution soln suspension susp syrup elixir "
+        "injection inj spray drops film coated extended release delayed hfa "
+        "trihydrate dihydrate monohydrate hemihydrate anhydrous micronized".split()
+    )
+
+    # Counter-ions. These are only noise when they FOLLOW an active moiety
+    # ("atorvastatin calcium", "metoprolol tartrate"). When the name leads with
+    # one, the salt IS the drug ("potassium chloride", "calcium carbonate",
+    # "ferrous sulfate") and nothing may be stripped.
+    _CATIONS = frozenset("calcium potassium sodium magnesium".split())
+    _ANIONS = frozenset(
+        "hcl hydrochloride dihydrochloride besylate mesylate fumarate maleate "
+        "succinate tartrate acetate sulfate sulphate bisulfate phosphate citrate "
+        "bromide".split()
+    )
+    _INORGANIC_LEADS = _CATIONS | frozenset(
+        "ferrous ferric iron zinc lithium aluminum aluminium ammonium dimethyl".split()
     )
 
     # Regex for stripping clinical severity adjectives
@@ -149,21 +169,48 @@ class TextNormalizer:
 
     @classmethod
     def clean_text(cls, text: str, strip_severity: bool = False) -> str:
-        """Removes punctuation, dosage specifications, salts, and extra whitespace."""
+        """Lower-cases, removes punctuation and extra whitespace, and optionally
+        strips severity qualifiers. Used for EVENT text: dose / salt / route
+        stripping is deliberately not applied here, because words like
+        "injection", "nasal", "oral" or "calcium" are meaningful in reaction
+        terms ("Injection site pain", "Blood calcium decreased")."""
         if not text:
             return ""
-        cleaned = cls._DOSAGE_SALT_REGEX.sub(" ", text.lower())
+        cleaned = text.lower()
         if strip_severity:
             cleaned = cls._SEVERITY_REGEX.sub(" ", cleaned)
         cleaned = cls._PUNCT_REGEX.sub(" ", cleaned)
         return " ".join(cleaned.split()).strip()
 
     @classmethod
+    def clean_drug_text(cls, text: str) -> str:
+        """Reduces a free-text drug name to its ingredient / brand tokens."""
+        if not text:
+            return ""
+        lowered = text.lower()
+        plain = " ".join(cls._PUNCT_REGEX.sub(" ", lowered).split())
+
+        tokens = cls._PUNCT_REGEX.sub(" ", cls._DOSE_REGEX.sub(" ", lowered)).split()
+        tokens = [t for t in tokens if t not in cls._FORM_WORDS]
+        if tokens and tokens[0] not in cls._INORGANIC_LEADS:
+            tokens = [tokens[0]] + [
+                t for t in tokens[1:]
+                if t not in cls._CATIONS and t not in cls._ANIONS
+            ]
+        # Never normalize a real name down to nothing.
+        return " ".join(tokens) if tokens else plain
+
+    @classmethod
     def normalize_drug(cls, raw_drug: str) -> str:
         """Cleans, standardizes brands/salts, and applies fuzzy typo fallback."""
-        cleaned = cls.clean_text(raw_drug)
-        if not cleaned:
+        full = cls.clean_drug_text(raw_drug)
+        if not full:
             return ""
+
+        # A parenthetical usually restates the same product
+        # ("ASPIRIN (ACETYLSALICYLIC ACID)"); the text before it is the name.
+        head = cls.clean_drug_text(raw_drug.split("(", 1)[0])
+        cleaned = head or full
 
         # 1. Exact or dictionary synonym match
         if cleaned in cls.BRAND_TO_GENERIC:
@@ -171,8 +218,9 @@ class TextNormalizer:
         if cleaned in cls.CANONICAL_DRUGS:
             return cleaned
 
-        # 2. Token-level matching (e.g. "Atorvastatin Oral" -> "atorvastatin")
-        for token in cleaned.split():
+        # 2. Token-level matching (e.g. "Atorvastatin Oral" -> "atorvastatin"),
+        #    over the full string so a generic named only in parentheses counts.
+        for token in full.split():
             if token in cls.BRAND_TO_GENERIC:
                 return cls.BRAND_TO_GENERIC[token]
             if token in cls.CANONICAL_DRUGS:
@@ -208,7 +256,7 @@ class TextNormalizer:
         if raw_clean in cls.CANONICAL_EVENTS:
             return raw_clean
 
-        # Punctuation / dosage cleaning WITHOUT severity stripping. This is the
+        # Punctuation cleaning WITHOUT severity stripping. This is the
         # value we fall back to, so a mangled qualifier-stripped string is never
         # emitted as the normalized term.
         base = cls.clean_text(raw_event, strip_severity=False)
@@ -228,9 +276,11 @@ class TextNormalizer:
             if stripped in cls.CANONICAL_EVENTS:
                 return stripped
 
-        # Phrase / substring search against known colloquial variants.
-        for phrase, canonical in cls.EVENT_SYNONYMS.items():
-            if phrase in base or phrase in raw_clean or (stripped and phrase in stripped):
+        # Whole-word phrase search against known colloquial variants. A bare
+        # substring test is wrong here: "aki" is inside "pollakiuria" and
+        # "emesis" inside "haematemesis".
+        for pattern, canonical in cls._EVENT_PHRASE_PATTERNS:
+            if pattern.search(base) or pattern.search(raw_clean):
                 return canonical
 
         for token in base.split():

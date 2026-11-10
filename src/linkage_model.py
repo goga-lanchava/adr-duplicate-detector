@@ -23,7 +23,8 @@ class FellegiSunterEM:
         weights: Optional[Dict[str, float]] = None,
         max_iter: int = 500,
         tol: float = 1e-6,
-        agreement_threshold: float = 0.65
+        agreement_threshold: float = 0.65,
+        agreement_thresholds: Optional[Dict[str, float]] = None
     ):
         self.feature_names = feature_names or [
             "age_sim", "sex_match", "seriousness_match",
@@ -34,6 +35,13 @@ class FellegiSunterEM:
         self.max_iter = max_iter
         self.tol = tol
         self.agreement_threshold = agreement_threshold
+        # Per-field overrides of the similarity level that counts as
+        # "agreement". Drug / event lists of one case routinely differ a little
+        # between reports, and follow-up reports arrive weeks apart, so those
+        # fields need a lower bar than the scalar default.
+        self.agreement_thresholds = dict(self.DEFAULT_AGREEMENT_THRESHOLDS)
+        if agreement_thresholds:
+            self.agreement_thresholds.update(agreement_thresholds)
         self.m: Optional[np.ndarray] = None
         self.u: Optional[np.ndarray] = None
         self.p: float = 0.05
@@ -46,25 +54,50 @@ class FellegiSunterEM:
     # Fallback priors used when EM is unidentifiable. These are conventional
     # Fellegi-Sunter starting values: a matching pair agrees on a field ~90% of
     # the time, a random pair ~10%.
+    DEFAULT_AGREEMENT_THRESHOLDS = {
+        "age_sim": 0.50,
+        "drug_jaccard": 0.50,
+        "event_jaccard": 0.50,
+        "temporal_sim": 0.30,
+    }
+
+    MAX_M = 0.98
+    # Below this many candidate pairs there is nothing to learn field
+    # statistics from, so conventional priors are used instead of EM.
+    MIN_PAIRS_FOR_EM = 30
     FALLBACK_M = 0.90
     FALLBACK_U = 0.10
     FALLBACK_P = 0.05
 
     def _binarize(self, X: np.ndarray) -> np.ndarray:
-        return (X >= self.agreement_threshold).astype(np.float64)
+        thresholds = np.array([
+            self.agreement_thresholds.get(name, self.agreement_threshold)
+            for name in self.feature_names
+        ], dtype=np.float64)
+        gamma = (X >= thresholds).astype(np.float64)
+        # Unknown stays unknown: neither agreement (1) nor disagreement (0).
+        gamma[np.isnan(X)] = np.nan
+        return gamma
 
     @staticmethod
     def _responsibilities(
         gamma: np.ndarray, m: np.ndarray, u: np.ndarray, p: float
     ) -> np.ndarray:
-        """Posterior P(match | agreement pattern), computed in log space."""
+        """Posterior P(match | agreement pattern), computed in log space.
+
+        A NaN entry (field missing on either report) contributes to neither
+        likelihood, i.e. it is marginalised out.
+        """
         log_m = np.log(m)
         log_1m = np.log1p(-m)
         log_u = np.log(u)
         log_1u = np.log1p(-u)
 
-        log_p_m = gamma @ log_m + (1.0 - gamma) @ log_1m
-        log_p_u = gamma @ log_u + (1.0 - gamma) @ log_1u
+        agree = (gamma == 1.0).astype(np.float64)
+        disagree = (gamma == 0.0).astype(np.float64)
+
+        log_p_m = agree @ log_m + disagree @ log_1m
+        log_p_u = agree @ log_u + disagree @ log_1u
 
         a = np.log(p) + log_p_m
         b = np.log1p(-p) + log_p_u
@@ -82,33 +115,50 @@ class FellegiSunterEM:
         n_samples, n_features = gamma_full.shape
 
         # Collapse to unique agreement patterns with multiplicities.
-        patterns, counts = np.unique(gamma_full, axis=0, return_counts=True)
+        # (NaN is recoded to -1 for the uniqueness pass, then restored.)
+        coded, counts = np.unique(
+            np.where(np.isnan(gamma_full), -1.0, gamma_full), axis=0, return_counts=True
+        )
+        patterns = np.where(coded < 0, np.nan, coded)
         counts = counts.astype(np.float64)
         total = counts.sum()
 
-        self.m = np.full(n_features, 0.85)
-        self.u = np.full(n_features, 0.10)
+        agree = (patterns == 1.0).astype(np.float64)
+        observed = (~np.isnan(patterns)).astype(np.float64)
+
+        # u (chance agreement among non-matches) is estimated directly rather
+        # than left free in EM. Duplicates are a small minority of candidate
+        # pairs, so the overall agreement rate of each field is a close,
+        # stable estimate of its non-match agreement rate. Leaving u free lets
+        # the two mixture components swap roles or latch onto some other
+        # structure in the data (e.g. "same sex" vs "different sex"), which
+        # made the learned weights swing wildly between similar inputs.
+        self.u = np.clip(
+            (agree * counts[:, None]).sum(axis=0)
+            / ((observed * counts[:, None]).sum(axis=0) + 1e-9),
+            1e-4, 1.0 - 1e-4,
+        )
+        self.m = np.maximum(np.full(n_features, 0.90), self.u)
         self.p = 0.05
 
         for iteration in range(self.max_iter):
             resp = self._responsibilities(patterns, self.m, self.u, self.p)
 
             w_match = resp * counts
-            w_nonmatch = (1.0 - resp) * counts
-
             sum_match = w_match.sum()
-            sum_nonmatch = w_nonmatch.sum()
 
-            new_p = float(sum_match / total)
-            new_m = (patterns * w_match[:, None]).sum(axis=0) / (sum_match + 1e-9)
-            new_u = (patterns * w_nonmatch[:, None]).sum(axis=0) / (sum_nonmatch + 1e-9)
-
-            new_m = np.clip(new_m, 1e-4, 1.0 - 1e-4)
-            new_u = np.clip(new_u, 1e-4, 1.0 - 1e-4)
-            new_p = float(np.clip(new_p, 1e-4, 0.50))
+            new_p = float(np.clip(sum_match / total, 1e-4, 0.50))
+            new_m = (agree * w_match[:, None]).sum(axis=0) / (
+                (observed * w_match[:, None]).sum(axis=0) + 1e-9
+            )
+            # A true match never agrees on a field LESS often than chance (the
+            # floor keeps every field's evidence non-negative), and no field is
+            # infallible (the cap keeps one disagreement from being an absolute
+            # veto when everything else lines up).
+            new_m = np.clip(np.maximum(new_m, self.u), 1e-4, self.MAX_M)
 
             delta = np.max(np.abs(self.m - new_m)) + abs(self.p - new_p)
-            self.m, self.u, self.p = new_m, new_u, new_p
+            self.m, self.p = new_m, new_p
             self.n_iter_ = iteration + 1
 
             if delta < self.tol:
@@ -126,7 +176,8 @@ class FellegiSunterEM:
         self.n_patterns_ = int(patterns.shape[0])
         ratios = self.m / (self.u + 1e-12)
         unidentifiable = (
-            self.n_patterns_ < 2
+            n_samples < self.MIN_PAIRS_FOR_EM
+            or self.n_patterns_ < 2
             or np.allclose(self.m, self.u, atol=1e-3)
             or np.all(np.abs(np.log2(np.maximum(ratios, 1e-12))) < 1e-2)
         )
@@ -159,11 +210,11 @@ class FellegiSunterEM:
                 [self.weights.get(name, 1.0) for name in self.feature_names],
                 dtype=np.float64
             )
-            w_sum = float(np.sum(w_vec))
-            if w_sum == 0:
-                probs = np.zeros(len(X), dtype=np.float64)
-            else:
-                probs = (X @ w_vec) / w_sum
+            # Weighted mean over the fields that are actually known for the pair.
+            present = ~np.isnan(X)
+            num = np.where(present, X, 0.0) @ w_vec
+            den = present.astype(np.float64) @ w_vec
+            probs = np.divide(num, den, out=np.zeros(len(X), dtype=np.float64), where=den > 0)
 
         probs = np.asarray(probs, dtype=np.float64)
 

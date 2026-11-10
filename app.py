@@ -132,7 +132,18 @@ with st.sidebar:
         )
     else:
         threshold_label = "Posterior Match Probability Threshold:"
-    prob_threshold = st.slider(threshold_label, 0.50, 0.95, 0.70, 0.05)
+        st.caption(
+            "Auto mode scores are probabilities: 0.50 means \"more likely a "
+            "duplicate than not\". Raise it for fewer, surer matches."
+        )
+    # Each mode has its own sensible default (and its own remembered slider
+    # position), because the two modes score on different scales.
+    mode_key = "manual" if is_manual else "auto"
+    prob_threshold = st.slider(
+        threshold_label, 0.30, 0.95,
+        ADRDuplicatePipeline.DEFAULT_THRESHOLDS[mode_key], 0.05,
+        key=f"threshold_{mode_key}",
+    )
 
     run_pipeline = st.button("🚀 Run Entity Resolution", type="primary", use_container_width=True)
 
@@ -217,10 +228,16 @@ if not st.session_state.cluster_df.empty:
 
     if diag:
         with st.expander("📊 Pipeline Diagnostics", expanded=False):
-            d1, d2, d3 = st.columns(3)
+            d1, d2, d3, d4 = st.columns(4)
             d1.metric("Candidate Pairs", f"{blocking.get('n_candidate_pairs', 0):,}")
             d2.metric("Demographic Vetoes", f"{diag.get('demographic_conflicts_vetoed', 0):,}")
-            d3.metric("EM Iterations", diag.get("em_iterations", "—"))
+            d3.metric("Ambiguous Matches Pruned", f"{diag.get('ambiguous_matches_pruned', 0):,}")
+            d4.metric("EM Iterations", diag.get("em_iterations", "—"))
+            st.caption(
+                "*Demographic vetoes*: pairs rejected for incompatible recorded age or sex. "
+                "*Ambiguous matches pruned*: above-threshold matches dropped because the "
+                "report resembled too many others to tell which, if any, is its duplicate."
+            )
 
             if diag.get("mode") == "auto" and diag.get("learned_weights"):
                 st.caption("Learned Fellegi-Sunter EM field weights (log-likelihood ratios)")
@@ -281,6 +298,13 @@ if not st.session_state.cluster_df.empty:
                         f"*Drugs:* `{row['drugs']}`\n\n"
                         f"*Events:* `{row['events']}`"
                     )
+                    n_ambiguous = int(row.get("ambiguous_matches_pruned", 0) or 0)
+                    if n_ambiguous:
+                        st.caption(
+                            f"⚠️ This report also resembled {n_ambiguous} other report(s) "
+                            "too closely to distinguish; only its strongest matches were kept. "
+                            "Review with extra care."
+                        )
                     st.divider()
 
     st.markdown("---")

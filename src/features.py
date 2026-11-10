@@ -1,4 +1,6 @@
-from typing import List, Tuple
+import math
+from collections import Counter
+from typing import Dict, List, Tuple
 import numpy as np
 from src.schemas import ADRReport
 
@@ -8,8 +10,10 @@ class PairwiseFeatureExtractor:
     Vectorizes candidate pairs into similarity vectors:
     [Age_Sim, Sex_Match, Seriousness_Match, Temporal_Sim, Drug_Jaccard, Event_Jaccard]
 
-    Missing values are encoded as 0.0 (no agreement evidence), preventing false-positive
-    agreement inflation in downstream probabilistic models.
+    A scalar field that is missing on either side is encoded as NaN: "unknown",
+    which the linkage model treats as carrying no evidence either way. Encoding it
+    as 0.0 would make a blank age look like an age *disagreement* and reject real
+    duplicates whenever one report omits a field.
 
     Scalar attributes are gathered into contiguous NumPy arrays and indexed with the
     pair index vectors, so age/sex/seriousness/temporal similarities are computed as
@@ -18,9 +22,9 @@ class PairwiseFeatureExtractor:
     """
     def __init__(
         self,
-        max_age_diff: float = 15.0,
+        max_age_diff: float = 8.0,
         max_day_diff: float = 90.0,
-        age_conflict_years: float = 15.0,
+        age_conflict_years: float = 5.0,
     ):
         self.max_age_diff = max_age_diff
         self.max_day_diff = max_day_diff
@@ -41,6 +45,33 @@ class PairwiseFeatureExtractor:
             return 0.0
         union = len(set_a) + len(set_b) - intersection
         return float(intersection / union) if union > 0 else 0.0
+
+    @staticmethod
+    def _idf_weights(sets: List[set]) -> Dict[str, float]:
+        """Smoothed inverse document frequency per term: log(1 + N / df).
+
+        A term present in every report weighs log(2) ~= 0.69; one seen in 2 of
+        1,000 reports weighs ~6.2.
+        """
+        df: Counter = Counter()
+        for s in sets:
+            df.update(s)
+        n = max(len(sets), 1)
+        return {term: math.log1p(n / count) for term, count in df.items()}
+
+    @staticmethod
+    def _weighted_jaccard(
+        set_a: set, set_b: set, weights: Dict[str, float], total_a: float, total_b: float
+    ) -> float:
+        """Jaccard overlap where each term contributes its rarity weight."""
+        if not set_a or not set_b:
+            return 0.0
+        shared = set_a & set_b
+        if not shared:
+            return 0.0
+        w_shared = sum(weights[t] for t in shared)
+        union = total_a + total_b - w_shared
+        return float(w_shared / union) if union > 0 else 0.0
 
     def _gather_arrays(self, reports: List[ADRReport]):
         """Gather per-report scalar attributes into contiguous NumPy arrays.
@@ -117,39 +148,45 @@ class PairwiseFeatureExtractor:
         # --- Gather per-report attributes into contiguous arrays ---
         age, day, sex_codes, ser_codes = self._gather_arrays(reports)
 
-        # 1. Age proximity (0.0 when either side is missing)
+        # 1. Age proximity (NaN when either side is missing)
         age_a, age_b = age[ia], age[ib]
         age_valid = ~(np.isnan(age_a) | np.isnan(age_b))
         age_diff = np.abs(np.where(age_valid, age_a - age_b, 0.0))
         X[:, 0] = np.where(
             age_valid,
             np.maximum(0.0, 1.0 - age_diff / self.max_age_diff),
-            0.0
+            np.nan
         )
 
-        # 2. Sex exact match (0.0 when either side is missing)
+        # 2. Sex exact match (NaN when either side is missing)
         sa, sb = sex_codes[ia], sex_codes[ib]
-        X[:, 1] = ((sa != 0) & (sb != 0) & (sa == sb)).astype(np.float32)
+        X[:, 1] = np.where((sa != 0) & (sb != 0), (sa == sb).astype(np.float32), np.nan)
 
-        # 3. Seriousness exact match (0.0 when either side is missing)
+        # 3. Seriousness exact match (NaN when either side is missing)
         ra, rb = ser_codes[ia], ser_codes[ib]
-        X[:, 2] = ((ra != 0) & (rb != 0) & (ra == rb)).astype(np.float32)
+        X[:, 2] = np.where((ra != 0) & (rb != 0), (ra == rb).astype(np.float32), np.nan)
 
         # 4. Temporal proximity
         day_diff = np.abs(day[ia] - day[ib])
         X[:, 3] = np.maximum(0.0, 1.0 - day_diff / self.max_day_diff)
 
-        # 5/6. Set overlaps (irreducibly per-pair, but against resolved sets)
+        # 5/6. Set overlaps (irreducibly per-pair, but against resolved sets).
+        #      Terms are weighted by rarity, so sharing a drug that half the
+        #      corpus takes counts for far less than sharing an unusual one.
         drug_sets = [r.drugs for r in reports]
         event_sets = [r.events for r in reports]
-        jac = self._jaccard
+        drug_w = self._idf_weights(drug_sets)
+        event_w = self._idf_weights(event_sets)
+        drug_tot = [sum(drug_w[t] for t in s) for s in drug_sets]
+        event_tot = [sum(event_w[t] for t in s) for s in event_sets]
+        wjac = self._weighted_jaccard
 
         drug_col = X[:, 4]
         event_col = X[:, 5]
         for row in range(n_pairs):
             a = ia[row]
             b = ib[row]
-            drug_col[row] = jac(drug_sets[a], drug_sets[b])
-            event_col[row] = jac(event_sets[a], event_sets[b])
+            drug_col[row] = wjac(drug_sets[a], drug_sets[b], drug_w, drug_tot[a], drug_tot[b])
+            event_col[row] = wjac(event_sets[a], event_sets[b], event_w, event_tot[a], event_tot[b])
 
         return X
