@@ -1,9 +1,9 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
 # numpy / pandas / scipy / streamlit at the pinned versions all ship manylinux
-# wheels for CPython 3.11, so no compiler toolchain is required.
+# wheels for CPython 3.14, so no compiler toolchain is required.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
