@@ -24,9 +24,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Your browser opens at `http://localhost:8501`. Choose **Synthetic Generator** in
-the sidebar, click **Generate Synthetic Cohort**, then **Run Entity Resolution** —
-you'll have results to look at in a few seconds. No data or API key needed.
+Your browser opens at `http://localhost:8501`. In the left panel click
+**Generate practice data**, then **Find duplicates** — you'll have results to look
+at in a few seconds. No data or API key needed.
 
 Docker alternative:
 

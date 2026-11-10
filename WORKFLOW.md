@@ -1,7 +1,7 @@
 # Trying the tool — a walkthrough
 
-This is a step-by-step guide to using the ADR Duplicate Resolution Engine for the
-first time. It takes about 5 minutes with the built-in synthetic data.
+This is a step-by-step guide to using the ADR Duplicate Detection tool for the
+first time. It takes about 5 minutes with the built-in practice data.
 
 ---
 
@@ -20,32 +20,25 @@ streamlit run app.py
 ```
 
 Your browser opens at `http://localhost:8501`. Everything below happens in that
-page. The controls are in the **left sidebar**; results appear in the main area.
+page. The controls are in the **left panel**; results appear in the main area.
 
 Prefer Docker? `docker build -t adr-dedup . && docker run -p 8501:8501 adr-dedup`,
 then open `http://localhost:8501`.
 
 ---
 
-## 2. Get some data in — Sidebar step 1 ("Data Ingestion")
+## 2. Load data — Step 1 in the left panel
 
-Pick one of the two radio options:
+Choose one of three sources:
 
-### Option A — Synthetic Generator (easiest first run)
+| Source | What it is | Button |
+|---|---|---|
+| **Generated practice data** | Invented reports with known duplicates mixed in. Because the right answer is known, the app can show how accurate it was. Two sliders set how many cases to invent and what share get duplicates. | **Generate practice data** |
+| **FDA sample (500 real reports)** | Real reports from the FDA adverse event database, included with the tool. | **Load FDA sample** |
+| **Upload a CSV file** | Your own reports. | drop the file in |
 
-1. Leave **Data Source** on *Synthetic Generator*.
-2. **Base Cases** — how many unique reports to invent (start with the default 300).
-3. **Duplicate Rate** — fraction of those that also get 1–2 noisy near-copies
-   injected (default 0.20).
-4. Click **Generate Synthetic Cohort**. You'll see
-   *"Generated N records."*
-
-The generator also records the *true* cluster of every report, so after you run
-the pipeline you get real precision / recall / F1 numbers to judge it by.
-
-### Option B — Upload CSV (your own data)
-
-Switch **Data Source** to *Upload CSV* and drop in a file with these columns:
+For your own file, use these columns (a **Download a template** button gives you a
+starting file):
 
 | Column | Meaning | Example |
 |---|---|---|
@@ -53,125 +46,112 @@ Switch **Data Source** to *Upload CSV* and drop in a file with these columns:
 | `Age` | years, may be blank | `54` |
 | `Sex` | `Male` / `Female` / blank | `Female` |
 | `Seriousness` | `Serious` / `Non-serious` / blank | `Serious` |
-| `ReportDay` | integer day index (any epoch) | `1764` |
-| `Drugs` | `;`-separated | `atorvastatin;aspirin` |
-| `Events` | `;`-separated reactions | `nausea;headache` |
-| `TrueClusterID` | *optional* — ground-truth group, enables scoring | `12` |
+| `ReportDay` | day the report was received, as a whole number | `1764` |
+| `Drugs` | separated by `;` | `atorvastatin;aspirin` |
+| `Events` | reactions, separated by `;` | `nausea;headache` |
+| `TrueClusterID` | *optional* — the known correct group, enables accuracy scoring | `12` |
 
-Drug and event text is normalized automatically (brand→generic, salts/forms
-stripped, colloquial symptoms→MedDRA-style terms, typo correction). Duplicate
-`ReportID`s are suffixed `#2`, `#3`… with a warning so nothing is silently lost.
-
-`real_faers_sample.csv` in the repo is a ready-made example (500 real openFDA
-reports) — upload that if you want to try real data immediately.
+Drug and reaction wording is tidied automatically (brand names become generic
+names, doses are dropped, everyday symptom words become standard terms, common
+typos are fixed). A green note confirms how many reports were loaded, and the
+main area shows them in a table.
 
 ---
 
-## 3. Choose how pairs are scored — Sidebar step 2 ("Linkage Engine & Mode")
+## 3. Choose a matching method — Step 2
 
-| Mode | Use when |
+| Method | Use when |
 |---|---|
-| **🧠 Auto-ML (Fellegi-Sunter EM)** | Default. Learns how much each field matters directly from the data. No knobs. |
-| **🎛️ Manual Expert Override** | You want to dictate the weighting. Six sliders appear (drug / event / age / date / sex / seriousness importance). |
+| **Automatic (recommended)** | The tool learns from your data how much each field should count. Nothing to set. |
+| **Manual weights** | You want to decide yourself. Six sliders appear, one per field (drugs, reactions, age, report date, sex, seriousness). |
 
-Start with **Auto-ML**.
+Start with **Automatic**.
 
 ---
 
-## 4. Set the cut-off — Sidebar step 3 ("Linkage Threshold")
+## 4. Set the strictness — Step 3
 
-One slider. Pairs scoring at or above it are treated as the same case. The
-default depends on the mode, because the two modes score on different scales:
+One slider, **Minimum match score**. Two reports are grouped when their score
+reaches it. Each method starts at a sensible value (0.50 for automatic, 0.70 for
+manual).
 
-- **Auto-ML: 0.50** — the score is a probability, so 0.50 means "more likely a
-  duplicate than not".
-- **Manual: 0.70** — the score is a weighted similarity average, where chance
-  look-alikes often reach 0.5–0.6.
+- **Higher** → fewer, more certain groups.
+- **Lower** → more groups, more to review.
 
-Then adjust to taste:
-
-- **Raise it** → fewer, higher-confidence merges (more precision).
-- **Lower it** → more aggressive merging (more recall).
-
-You can re-run with different values freely.
+Hover the **?** next to any control for a short explanation.
 
 ---
 
 ## 5. Run it
 
-Click **🚀 Run Entity Resolution**. After a moment the main panel fills in.
+Click **Find duplicates**. After a moment the results appear.
 
 ---
 
-## 6. Read the dashboard
+## 6. Read the summary
 
-**Top row of metrics**
+Four numbers at the top:
 
-- **Total Reports** — records loaded.
-- **Candidate Clusters** — groups of size > 1 (i.e. suspected duplicate sets).
-- **Candidate Duplicates** — total reports sitting in those groups.
-- **Pairwise F1** — accuracy vs ground truth (`N/A` if your data has no
-  `TrueClusterID`). A green **Ground-Truth Performance** box adds precision /
-  recall when available.
+- **Reports analysed** — how many reports were loaded.
+- **Duplicate groups found** — sets of reports that look like the same case.
+- **Reports in groups** — how many reports sit in those sets.
+- **Marked for removal** — how many you have chosen to remove so far.
 
-**Watch for warnings** (shown as coloured banners):
-
-- *Blocking hit its candidate-pair cap* → input too dense; recall is unreliable,
-  tighten the data or parameters.
-- *EM did not converge* / *EM was unidentifiable* → learned weights may be shaky
-  (common on very small or very uniform inputs).
-
-**📊 Pipeline Diagnostics** (expander) — candidate-pair count, how many pairs were
-vetoed for incompatible age/sex, how many matches were pruned as ambiguous, EM
-iteration count, and the learned per-field weights table (Auto mode).
-
-**🔗 Scored Linked Pairs** (expander) — every scored pair above the audit
-threshold with its individual feature similarities. This is the "why did these
-two match" view.
+With practice data (or a file that has `TrueClusterID`) a line underneath shows
+the accuracy. A coloured banner appears only if something about the run needs
+your attention, with a plain explanation.
 
 ---
 
-## 7. Review clusters — the human-in-the-loop step
+## 7. Review the groups — "Review groups" tab
 
-- **Left:** *"Select a Cluster to Inspect"* dropdown lists every candidate
-  duplicate group.
-- **Right:** *Side-by-Side Review* shows each report in that cluster with its
-  age, sex, seriousness, day, drugs, and events laid out for comparison.
-- Each record has a **Keep Record** checkbox, ticked by default. **Untick** the
-  ones you judge to be redundant duplicates.
+- Move between groups with **Previous** / **Next** or the drop-down
+  ("Group 3 of 64 · 2 reports").
+- The table shows the group's reports side by side. **Untick Keep** for any
+  report you consider a redundant copy.
+- Shortcuts: **Keep earliest only** keeps the first report received and marks
+  the rest; **Keep all** treats them as separate cases.
+- **Why these reports were grouped** shows the match score for each pair and how
+  similar they are field by field.
+- A yellow note means some reports in the group also resembled others outside it;
+  check those groups more carefully.
+- **Apply a decision to every group** lets you keep the earliest report in all
+  groups at once, or reset all decisions.
 
-A ⚠️ note under a record means it also resembled several *other* reports too
-closely to tell apart, and only its strongest matches were kept — give those
-clusters a closer look.
-
-Work through the clusters that matter to you. Your decisions are remembered as
-you switch between clusters.
-
----
-
-## 8. Export — "Audit Trail & Data Export"
-
-- **📥 Export De-duplicated Dataset** — CSV of only the records you left ticked
-  (the label shows the surviving count).
-- **📋 Export Regulatory Audit Trail** — CSV of *every* input report with its
-  assigned `cluster_id`, `cluster_size`, and your `KEEP` / `REMOVE_DUPLICATE`
-  decision — the paper trail for why each record was kept or dropped.
+Your choices are remembered as you move between groups and tabs.
 
 ---
 
-## 9. Iterate
+## 8. The other tabs
 
-Adjust the threshold or switch to Manual mode, click **Run Entity Resolution**
-again, and compare. On synthetic data, use the F1 metric to tune; on real data,
-rely on the side-by-side review and the Scored Linked Pairs view.
+- **All reports** — every report with its group and current Keep / Remove decision.
+- **Matched pairs** — every notable pair of reports with its score, strongest first.
+- **Run details** — how many pairs were compared, how many were ruled out by age
+  or sex, how many were too ambiguous to match, accuracy (when known), and which
+  fields the automatic method found most informative.
+
+---
+
+## 9. Export — "Export" tab
+
+- **Download cleaned data** — only the reports you chose to keep.
+- **Download decision log** — every report with its group and your keep / remove
+  decision: the record of why each report was kept or dropped.
+
+---
+
+## 10. Try again with different settings
+
+Change the method or the minimum match score and click **Find duplicates** again.
+Note that a new run resets your keep / remove decisions.
 
 ---
 
 ## Good to know
 
-- With only these six fields, genuinely ambiguous cases exist — e.g. several
+- With only these six fields, some cases cannot be told apart — e.g. several
   same-age, same-sex reports of the same drug and reaction filed the same week.
   The tool does not merge such look-alike crowds; it keeps each report's best
-  one or two matches and flags the report so you can make the call.
-- Nothing is deleted automatically. The tool only ever *proposes*; the exported
-  de-duplicated file reflects your checkboxes.
+  one or two matches and flags the group so you can make the call.
+- Nothing is deleted automatically. The tool only suggests; the cleaned file
+  reflects your choices.

@@ -235,13 +235,31 @@ def test_app_runs_end_to_end():
     at = AppTest.from_file(str(app), default_timeout=120).run()
     assert not at.exception
 
-    next(b for b in at.button if "Generate" in b.label).click().run()
-    next(b for b in at.button if "Run Entity Resolution" in b.label).click().run()
-    assert not at.exception
-    labels = [m.label for m in at.metric]
-    assert "Candidate Clusters" in labels and "Ambiguous Matches Pruned" in labels
+    def click(label):
+        next(b for b in at.button if b.label == label).click().run()
+        assert not at.exception
 
-    # Same flow in manual mode.
+    click("Generate practice data")
+    click("Find duplicates")
+    labels = [m.label for m in at.metric]
+    assert "Duplicate groups found" in labels and "Too ambiguous to match" in labels
+
+    # Review actions change the removal count.
+    def removed():
+        return next(m.value for m in at.metric if m.label == "Marked for removal")
+
+    assert removed() == "0"
+    click("Keep earliest only, in all groups")
+    assert removed() != "0"
+    click("Reset all decisions")
+    assert removed() == "0"
+    click("Next")
+    click("Keep earliest only")
+    assert removed() != "0"
+
+    # Same flow with manual weights, and with the bundled real sample.
     at.radio[1].set_value(at.radio[1].options[1]).run()
-    next(b for b in at.button if "Run Entity Resolution" in b.label).click().run()
-    assert not at.exception
+    click("Find duplicates")
+    at.radio[0].set_value(at.radio[0].options[1]).run()
+    click("Load FDA sample")
+    click("Find duplicates")

@@ -8,7 +8,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
-COPY app.py .
+COPY .streamlit/ ./.streamlit/
+COPY app.py real_faers_sample.csv ./
 
 # Drop root for the running service.
 RUN useradd --create-home --uid 1000 appuser
